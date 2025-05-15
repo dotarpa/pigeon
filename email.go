@@ -94,7 +94,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	// ------------------------------------------------------------------
 	// Deliver via SMTP.
 	// ------------------------------------------------------------------
-	hostPort := cfg.Smarthost
+	hostPort := cfg.Smarthost.String()
 	if hostPort == "" {
 		hostPort = "localhost:25"
 	}
