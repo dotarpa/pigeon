@@ -1,7 +1,7 @@
 from: sender@example.com
 to: receiver@example.com
 smarthost: smtp.example.com:25
-template_path: mail.tmpl
+template_path: email.tmpl
 attachments:
   - ./sample.txt
 headers:
