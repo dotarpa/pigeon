@@ -1,0 +1,17 @@
+From: {{ .From }}
+To: {{ .To }}
+Sub: {{ .Subject }}
+
+Hello, {{ .Name }}!
+
+{{- if .Items }}
+You have {{ len .Items }} new items:
+{{- range .Items }}
+  - {{ . }}
+{{- end }}
+{{ else }}
+No new items.
+{{ end }}
+
+-- End of message --
+
