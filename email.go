@@ -1,3 +1,6 @@
+// Package pigeon provides an email sending library with support for
+// RFC2822 templates, YAML/JSON configuration, and attachments.
+// See README.md for details and usage examples.
 package pigeon
 
 import (
@@ -20,13 +23,15 @@ import (
 	"github.com/dotarpa/pigeon/tpl"
 )
 
-// Send builds and delivers an email. If cfg.Attachments has one or more
-// file paths, a multipart/mixed message is built; otherwise a simple
-// text/plain message is used.
+// Send builds and sends an email using the specified configuration and template data.
 //
-// The retrun value `retry` is true when the caller *may* retry the operation
-// (e.g. transiet network failure) and false for parmanent errors
-// (e.g. template parsing failure, 5xx SMTP response for invalid sender).
+// If cfg.Attachments is non-empty, the message will be sent as multipart/mixed
+// with attachments. Otherwise, a simple text/plain message is used.
+// The template is loaded from cfg.TemplatePath and rendered using the provided data.
+//
+// The function returns (retry, err):
+//   - retry=true means a temporary error (the caller may want to retry later)
+//   - retry=false means a permanent error (invalid configuration, fatal SMTP error, etc.)
 func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error) {
 	if cfg.TemplatePath == "" {
 		return false, errors.New("TemplatePath must be specified")
@@ -37,9 +42,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		return false, err
 	}
 
-	// ------------------------------------------------------------------
-	// Build headers(template values have priority, config values are fallback)
-	// ------------------------------------------------------------------
+	// Build the message headers.
 	hdr := make(textproto.MIMEHeader)
 
 	from := chooseNonEmpty(t.From(), cfg.From)
@@ -71,6 +74,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	// Required headers.
 	hdr.Set("MIME-Version", "1.0")
 
+	// Use the specified timezone if set; otherwise, default to UTC.
 	var msgTime time.Time
 	if cfg.Timezone != "" {
 		loc, err := time.LoadLocation(cfg.Timezone)
@@ -84,7 +88,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	}
 	hdr.Set("Date", msgTime.Format(time.RFC1123Z))
 
-	// Additional user-supplied headers from config
+	// Add any custom headers from the configuration.
 	for k, v := range cfg.Headers {
 		if v == "" {
 			continue
@@ -92,11 +96,9 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		hdr.Set(k, v)
 	}
 
-	// ------------------------------------------------------------------
-	// Render body
-	// ------------------------------------------------------------------
 	var msg bytes.Buffer
 
+	// If there are no attachments, send as plain text.
 	if len(cfg.Attachments) == 0 {
 		hdr.Set("Context-Type", "text/plain; charset=UTF-8")
 		hdr.Set("Content-Transfer-Encoding", "7bit")
@@ -104,6 +106,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		msg.WriteString("\r\n")
 		_ = t.Execute(&msg, data)
 	} else {
+		// Otherwise, construct a multipart/mixed message.
 		mw := multipart.NewWriter(&msg)
 		hdr.Set("Content-Type", fmt.Sprintf("multipart/mixed; boundary=%s", mw.Boundary()))
 		writeHeaders(&msg, hdr)
@@ -117,7 +120,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		pw, _ := mw.CreatePart(textHdr)
 		_ = t.Execute(pw, data)
 
-		// attachment
+		// Part 2+: attachments.
 		for _, path := range cfg.Attachments {
 			if err := addAttachementPart(mw, path); err != nil {
 				return false, err
@@ -126,9 +129,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		mw.Close()
 	}
 
-	// ------------------------------------------------------------------
-	// Deliver via SMTP.
-	// ------------------------------------------------------------------
+	// Deliver the message via SMTP.
 	hostPort := cfg.Smarthost.String()
 	if hostPort == "" {
 		hostPort = "localhost:25"
@@ -162,7 +163,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		return false, err
 	}
 
-	for _, rcpt := range getherRecipients(hdr) {
+	for _, rcpt := range recipients(hdr) {
 		if err := c.Rcpt(rcpt); err != nil {
 			return false, err // recipient rejected - permanent
 		}
@@ -184,7 +185,8 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	return false, nil
 }
 
-// addAttachmentPart reads the file and appends a Base64-encoded part.
+// addAttachmentPart adds a file as a base64-encoded attachment part to the multipart message.
+// It infers the content type from the file extension.
 func addAttachementPart(mw *multipart.Writer, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -205,7 +207,7 @@ func addAttachementPart(mw *multipart.Writer, path string) error {
 	return nil
 }
 
-// encodeAndWrapBase64 writes base64 with 76‑char lines.
+// encodeAndWrapBase64 writes base64-encoded data to w, breaking lines at 76 characters per RFC 2045.
 func encodeAndWrapBase64(w io.Writer, b []byte) {
 	enc := base64.StdEncoding
 	const line = 76
@@ -221,6 +223,7 @@ func encodeAndWrapBase64(w io.Writer, b []byte) {
 	}
 }
 
+// chooseNonEmpty returns a if non-empty, else b.
 func chooseNonEmpty(a, b string) string {
 	if a != "" {
 		return a
@@ -239,6 +242,7 @@ func encodingUTF8Subject(s string) string {
 	return fmt.Sprintf("=?UTF-8?B?%s?=", b)
 }
 
+// isASCII returns true if s contains only ASCII characters.
 func isASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] > 127 {
@@ -248,8 +252,8 @@ func isASCII(s string) bool {
 	return true
 }
 
-// foldHeader writes a single header line obeying the 78-char limitation.
-// It uses a native space fold suitable for ASCII headers.
+// foldHeader writes a header with a soft line length limit of 78 characters (RFC 5322 recommended).
+// This is not strictly required (limit is 998), but improves readability and interoperability.
 func foldHeader(buf *bytes.Buffer, k, v string) {
 	const max = 78
 	line := k + ": " + v
@@ -266,24 +270,7 @@ func foldHeader(buf *bytes.Buffer, k, v string) {
 	buf.WriteString(line + "\r\n")
 }
 
-func getherRecipients(h textproto.MIMEHeader) []string {
-	var list []string
-	appendAddr := func(field string) {
-		if v := h.Get(field); v != "" {
-			for _, addr := range strings.Split(v, ",") {
-				addr = strings.TrimSpace(addr)
-				if addr != "" {
-					list = append(list, addr)
-				}
-			}
-		}
-	}
-	appendAddr("To")
-	appendAddr("Cc")
-	appendAddr("Bcc")
-	return list
-}
-
+// writeHeaders writes the MIME headers to the buffer, folding long lines at 78 characters.
 func writeHeaders(buf *bytes.Buffer, h textproto.MIMEHeader) {
 	for k, vv := range h {
 		for _, v := range vv {
@@ -292,6 +279,7 @@ func writeHeaders(buf *bytes.Buffer, h textproto.MIMEHeader) {
 	}
 }
 
+// recipients extracts all recipient addresses (To, Cc, Bcc) from the headers.
 func recipients(h textproto.MIMEHeader) []string {
 	var out []string
 	for _, f := range []string{"To", "Cc", "Bcc"} {
