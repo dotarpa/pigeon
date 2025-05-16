@@ -79,10 +79,14 @@ func TestSend_Basic(t *testing.T) {
 	tmplContent := "From: sender@example.com\nTo: recv1@example.com\nSub: TestSub\n\nHello, World"
 	tmplPath := tplWriteTemp(t, tmplContent)
 
+	smarthost := HostPort{}
+	var err error
+	smarthost.Host, smarthost.Port, err = net.SplitHostPort(addr)
+
 	cfg := EmailConfig{
 		From:         "",
 		To:           "",
-		Smarthost:    addr,
+		Smarthost:    smarthost,
 		TemplatePath: tmplPath,
 	}
 
