@@ -1,0 +1,6 @@
+from: "sender@example.com"
+to: "receiver@example.com"
+smarthost: "localhost:1025"
+template_path: "example/mail.tmpl"
+attachments:
+  - "example/sample.txt"
