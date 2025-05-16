@@ -8,20 +8,20 @@ import (
 )
 
 func main() {
-	// 設定ファイル読み込み
-	cfg, err := pigeon.LoadFile("example/config.yaml")
+	cfg, err := pigeon.LoadFile("config.yaml")
 	if err != nil {
-		log.Fatalf("LoadFile error: %v", err)
+		log.Fatal(err)
 	}
-	// テンプレートに渡す値
 	data := map[string]any{
-		"Name":    "Pigeon User",
+		"Name":    "Alice",
 		"To":      cfg.To,
-		"Subject": "Hello from Pigeon",
+		"From":    cfg.From,
+		"Subject": "Welcome!",
+		"Items":   []string{"Server rebooted", "Disk space low"},
 	}
 	retry, err := pigeon.Send(context.Background(), *cfg, data)
 	if err != nil {
 		log.Fatalf("Send failed: %v (retry=%v)", err, retry)
 	}
-	log.Println("Mail sent!")
+	log.Println("Mail sent successfully")
 }

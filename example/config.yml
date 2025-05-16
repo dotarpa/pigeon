@@ -1,6 +1,9 @@
-from: "sender@example.com"
-to: "receiver@example.com"
-smarthost: "localhost:1025"
-template_path: "example/mail.tmpl"
+from: sender@example.com
+to: receiver@example.com
+smarthost: smtp.example.com:25
+template_path: email.tmpl
 attachments:
-  - "example/sample.txt"
+  - ./sample.txt
+headers:
+  X-App: pigeon
+timezone: Asia/Tokyo
