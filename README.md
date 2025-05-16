@@ -1,27 +1,61 @@
-# pigeon - Simple Go Email Library
+# Pigeon – Simple, Template-Based Email Library for Go
 
-**Pigeon** は Go 言語向けの、テンプレート・YAML・添付ファイル対応メール送信ライブラリです。  
-標準パッケージのみで実装されており、テキストテンプレート・添付ファイル付きメール・設定の動的ロードに対応します。
+**Pigeon** is a lightweight Go library for sending emails with text templates, YAML/JSON configuration, and file attachments.
+It uses only the Go standard library and is designed for flexible, production-quality email notifications and reports.
 
-## Usage
+---
 
-### メールテンプレートファイル例
+## Features
 
-**ヘッダと本文の間には必ず空行が必要です。**
+- Pure Go (no external dependencies, except YAML parser)
+- Dynamic email headers and body with [text/template](https://pkg.go.dev/text/template)
+- Load configuration from YAML/JSON files
+- Support for multiple To/Cc/Bcc addresses
+- UTF-8 subject lines (RFC 2047 encoding)
+- Multipart/mixed email with file attachments
+- Optional custom headers
+- Comprehensive tests and example included
 
-- mail.tmpl(例)
+---
+
+## Installation
+
+```sh
+go get github.com/dotarpa/pigeon
+```
+
+---
+
+## Usage Example
+
+### 1. Prepare a Template File
+
+Example: `mail.tmpl`
 
 ```
-From: sender@example.com
+From: {{ .From }}
 To: {{ .To }}
 Sub: {{ .Subject }}
 
 Hello, {{ .Name }}!
+
+{{- if .Items }}
+You have {{ len .Items }} new items:
+{{- range .Items }}
+  - {{ . }}
+{{- end }}
+{{ else }}
+No new items.
+{{ end }}
+
+-- End of message --
 ```
 
-### configファイル例
+---
 
-- config.yaml
+### 2. Prepare a YAML Configuration File
+
+Example: `config.yaml`
 
 ```yaml
 from: sender@example.com
@@ -32,9 +66,14 @@ attachments:
   - ./sample.txt
 headers:
   X-App: pigeon
+timezone: Asia/Tokyo
 ```
 
-### example code
+---
+
+### 3. Write Go Code to Send the Email
+
+Example: `main.go`
 
 ```go
 package main
@@ -54,7 +93,9 @@ func main() {
 	data := map[string]any{
 		"Name":    "Alice",
 		"To":      cfg.To,
+		"From":    cfg.From,
 		"Subject": "Welcome!",
+		"Items":   []string{"Server rebooted", "Disk space low"},
 	}
 	retry, err := pigeon.Send(context.Background(), *cfg, data)
 	if err != nil {
@@ -63,3 +104,52 @@ func main() {
 	log.Println("Mail sent successfully")
 }
 ```
+
+---
+
+## Testing
+
+Run all unit and integration tests:
+
+```sh
+go test -v ./...
+```
+
+---
+
+## Directory Structure
+
+```
+pigeon/
+  config.go       # EmailConfig and configuration loading
+  email.go        # Send function and MIME/multipart logic
+  tpl/            # Email template parsing
+  example/        # Usage example (main.go, config.yaml, mail.tmpl)
+  testdata/       # (optional) test fixtures
+```
+
+---
+
+## License
+
+Apache License 2.0
+
+---
+
+## Links
+
+- [pkg.go.dev documentation](https://pkg.go.dev/github.com/dotarpa/pigeon)
+- [text/template documentation](https://pkg.go.dev/text/template)
+
+---
+
+## Limitations / Not Yet Implemented
+
+Pigeon currently does **not** support:
+
+- **HTML email**: Only plain text (`text/plain`) messages are supported. Embedding HTML in the template will not create a proper HTML email or `multipart/alternative` message.
+- **SMTP authentication**: No support for SMTP username/password authentication. Only open or IP-authorized relays can be used.
+- **TLS connections**: No `STARTTLS` or implicit SSL support; SMTP is unencrypted only.
+- **Post-template validation**: There is no strict validation of headers, recipients, or content after template execution. Malformed output may cause the send to fail at the SMTP server.
+
+If you require any of these, feel free to open an issue or PR!
