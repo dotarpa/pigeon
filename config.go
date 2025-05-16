@@ -100,6 +100,7 @@ type EmailConfig struct {
 	RequireTLS   *bool             `yaml:"require_tls,omitempty" json:"require_tls,omitempty"`
 	Text         string            `yaml:"text,omitempty" json:"text,omitempty"`
 	HTML         string            `yaml:"html,omitempty" json:"html,omitempty"`
+	Timezone     string            `yaml:"timezone,omitempty" json:"timezone,omitempty"`
 
 	Attachments  []string `yaml:"attachments,omitempty" json:"attachments,omitempty"`
 	TemplatePath string   `yaml:"template_path,omitempty" json:"template_path,omitempty"`

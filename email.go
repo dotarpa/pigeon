@@ -70,7 +70,19 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 	// Required headers.
 	hdr.Set("MIME-Version", "1.0")
-	hdr.Set("Data", time.Now().UTC().Format(time.RFC1123Z))
+
+	var msgTime time.Time
+	if cfg.Timezone != "" {
+		loc, err := time.LoadLocation(cfg.Timezone)
+		if err == nil {
+			msgTime = time.Now().In(loc)
+		} else {
+			msgTime = time.Now().UTC()
+		}
+	} else {
+		msgTime = time.Now().UTC()
+	}
+	hdr.Set("Date", msgTime.Format(time.RFC1123Z))
 
 	// Additional user-supplied headers from config
 	for k, v := range cfg.Headers {

@@ -194,3 +194,91 @@ func TestSendWithAttacment(t *testing.T) {
 	}
 
 }
+
+func TestSend_DateHeaderWithTimeZone(t *testing.T) {
+	addr, recv, teardown := startMockSMTP(t)
+	defer teardown()
+
+	tmplContent := "From: sender@example.com\nTo: recv@example.com\nSub: Test TZ\n\nBody."
+	tmplPath := tplWriteTemp(t, tmplContent)
+
+	smarthost := HostPort{}
+	smarthost.Host, smarthost.Port, _ = net.SplitHostPort(addr)
+
+	cfg := EmailConfig{
+		Smarthost:    smarthost,
+		TemplatePath: tmplPath,
+		Timezone:     "Asia/Tokyo",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := Send(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	select {
+	case raw := <-recv:
+		dateLine := ""
+		for _, l := range strings.Split(raw, "\n") {
+			if strings.HasPrefix(l, "Date:") {
+				dateLine = l
+				break
+			}
+		}
+		if dateLine == "" {
+			t.Fatal("Date header missing")
+		}
+
+		if !strings.Contains(dateLine, "+0900") {
+			t.Errorf("Date header not in Asia/Tokyo: %s", dateLine)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no message recived by mock SMTP")
+	}
+}
+
+func TestSend_DateHeaderUTC(t *testing.T) {
+	addr, recv, teardown := startMockSMTP(t)
+	defer teardown()
+
+	tmplContent := "From: sender@example.com\nTo: recv@example.com\nSub: UTC Test\n\nBody."
+	tmplPath := tplWriteTemp(t, tmplContent)
+
+	smarthost := HostPort{}
+	smarthost.Host, smarthost.Port, _ = net.SplitHostPort(addr)
+
+	cfg := EmailConfig{
+		Smarthost:    smarthost,
+		TemplatePath: tmplPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := Send(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	select {
+	case raw := <-recv:
+		dateLine := ""
+		for _, l := range strings.Split(raw, "\n") {
+			if strings.HasPrefix(l, "Date:") {
+				dateLine = l
+				break
+			}
+		}
+		if dateLine == "" {
+			t.Fatalf("Date header missing")
+		}
+		if !strings.Contains(dateLine, "+0000") {
+			t.Errorf("Date header not in UTC: %s", dateLine)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no message received by mock SMTP")
+	}
+}
