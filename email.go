@@ -6,17 +6,23 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/smtp"
 	"net/textproto"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/dotarpa/pigeon/internal/tpl"
+	"github.com/dotarpa/pigeon/tpl"
 )
 
-// Send renders the template located at cfg.TemplatePath using data and
-// sends the resulting message through the configured SMTP smarthost.
+// Send builds and delivers an email. If cfg.Attachments has one or more
+// file paths, a multipart/mixed message is built; otherwise a simple
+// text/plain message is used.
 //
 // The retrun value `retry` is true when the caller *may* retry the operation
 // (e.g. transiet network failure) and false for parmanent errors
@@ -64,8 +70,6 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 	// Required headers.
 	hdr.Set("MIME-Version", "1.0")
-	hdr.Set("Content-Type", "text/plain; charset=UTF-8")
-	hdr.Set("Content-Transfer-Encoding", "7bit")
 	hdr.Set("Data", time.Now().UTC().Format(time.RFC1123Z))
 
 	// Additional user-supplied headers from config
@@ -80,15 +84,34 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	// Render body
 	// ------------------------------------------------------------------
 	var msg bytes.Buffer
-	for k, vv := range hdr {
-		for _, v := range vv {
-			foldHeader(&msg, k, v)
-		}
-	}
-	msg.WriteString("\r\n") // blank line between headers and body
 
-	if err := t.Execute(&msg, data); err != nil {
-		return false, err // permanent error(template exec
+	if len(cfg.Attachments) == 0 {
+		hdr.Set("Context-Type", "text/plain; charset=UTF-8")
+		hdr.Set("Content-Transfer-Encoding", "7bit")
+		writeHeaders(&msg, hdr)
+		msg.WriteString("\r\n")
+		_ = t.Execute(&msg, data)
+	} else {
+		mw := multipart.NewWriter(&msg)
+		hdr.Set("Content-Type", fmt.Sprintf("multipart/mixed; boundary=%s", mw.Boundary()))
+		writeHeaders(&msg, hdr)
+		msg.WriteString("\r\n")
+
+		// part 1: text body
+		textHdr := textproto.MIMEHeader{
+			"Content-Type":              {"text/plain; charset=UTF-8"},
+			"Content-Transfer-Encoding": {"7bit"},
+		}
+		pw, _ := mw.CreatePart(textHdr)
+		_ = t.Execute(pw, data)
+
+		// attachment
+		for _, path := range cfg.Attachments {
+			if err := addAttachementPart(mw, path); err != nil {
+				return false, err
+			}
+		}
+		mw.Close()
 	}
 
 	// ------------------------------------------------------------------
@@ -147,7 +170,43 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		return true, err
 	}
 	return false, nil
+}
 
+// addAttachmentPart reads the file and appends a Base64-encoded part.
+func addAttachementPart(mw *multipart.Writer, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fname := filepath.Base(path)
+	ctype := mime.TypeByExtension(filepath.Ext(fname))
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	hdr := textproto.MIMEHeader{
+		"Content-Type":              {fmt.Sprintf("%s; name=\"%s\"", ctype, fname)},
+		"Content-Transfer-Encoding": {"base64"},
+		"Content-Disposition":       {fmt.Sprintf("attachment; filename=\"%s\"", fname)},
+	}
+	pw, _ := mw.CreatePart(hdr)
+	encodeAndWrapBase64(pw, data)
+	return nil
+}
+
+// encodeAndWrapBase64 writes base64 with 76‑char lines.
+func encodeAndWrapBase64(w io.Writer, b []byte) {
+	enc := base64.StdEncoding
+	const line = 76
+	for len(b) > 0 {
+		n := line / 4 * 3 // encode quantized
+		if n > len(b) {
+			n = len(b)
+		}
+		chunk := enc.EncodeToString(b[:n])
+		io.WriteString(w, chunk)
+		io.WriteString(w, "\r\n")
+		b = b[n:]
+	}
 }
 
 func chooseNonEmpty(a, b string) string {
@@ -211,4 +270,24 @@ func getherRecipients(h textproto.MIMEHeader) []string {
 	appendAddr("Cc")
 	appendAddr("Bcc")
 	return list
+}
+
+func writeHeaders(buf *bytes.Buffer, h textproto.MIMEHeader) {
+	for k, vv := range h {
+		for _, v := range vv {
+			foldHeader(buf, k, v)
+		}
+	}
+}
+
+func recipients(h textproto.MIMEHeader) []string {
+	var out []string
+	for _, f := range []string{"To", "Cc", "Bcc"} {
+		for _, addr := range strings.Split(h.Get(f), ",") {
+			if addr = strings.TrimSpace(addr); addr != "" {
+				out = append(out, addr)
+			}
+		}
+	}
+	return out
 }

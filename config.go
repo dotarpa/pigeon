@@ -51,7 +51,7 @@ type HostPort struct {
 	Port string
 }
 
-func (hp *HostPort) UmarshalYAML(unmarshal func(interface{}) error) error {
+func (hp *HostPort) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var (
 		raw string
 		err error
@@ -100,7 +100,9 @@ type EmailConfig struct {
 	RequireTLS   *bool             `yaml:"require_tls,omitempty" json:"require_tls,omitempty"`
 	Text         string            `yaml:"text,omitempty" json:"text,omitempty"`
 	HTML         string            `yaml:"html,omitempty" json:"html,omitempty"`
-	TemplatePath string            `yaml:"template_path,omitempty" json:"template_path,omitempty"`
+
+	Attachments  []string `yaml:"attachments,omitempty" json:"attachments,omitempty"`
+	TemplatePath string   `yaml:"template_path,omitempty" json:"template_path,omitempty"`
 }
 
 func Load(s string) (*EmailConfig, error) {
