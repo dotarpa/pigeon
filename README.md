@@ -151,5 +151,3 @@ Pigeon currently does **not** support:
 - **SMTP authentication**: No support for SMTP username/password authentication. Only open or IP-authorized relays can be used.
 - **TLS connections**: No `STARTTLS` or implicit SSL support; SMTP is unencrypted only.
 - **Post-template validation**: There is no strict validation of headers, recipients, or content after template execution. Malformed output may cause the send to fail at the SMTP server.
-
-If you require any of these, feel free to open an issue or PR!
