@@ -4,6 +4,7 @@
 package pigeon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -13,10 +14,12 @@ import (
 	"mime"
 	"mime/multipart"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -290,4 +293,132 @@ func recipients(h textproto.MIMEHeader) []string {
 		}
 	}
 	return out
+}
+
+// SendRaw sends the raw RFC2822 message (headers+body) via SMTP to smtpAddr.
+// From, To, Cc, Bcc headers are extracted and used for MAIL/RCPT commands.
+// The message is streamed as-is via DATA.
+func SendRaw(ctx context.Context, raw io.Reader, smtpAddr string) error {
+	tp := textproto.NewReader(bufio.NewReader(raw))
+	headers, err := tp.ReadMIMEHeader()
+	if err != nil {
+		return fmt.Errorf("failed to parse header: %w", err)
+	}
+
+	from := headers.Get("From")
+	if from == "" {
+		return errors.New("missing from address")
+	}
+
+	toAll := parseAddressList(headers.Get("To"))
+	toAll = append(toAll, parseAddressList(headers.Get("Cc"))...)
+	toAll = append(toAll, parseAddressList(headers.Get("Bcc"))...)
+
+	if len(toAll) == 0 {
+		return errors.New("no recipients found in To/Cc/Bcc")
+	}
+
+	host := smtpAddr
+	if i := strings.Index(smtpAddr, ":"); i > 0 {
+		host = smtpAddr[:i]
+	}
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", smtpAddr)
+	if err != nil {
+		return fmt.Errorf("failed to dial smtp: %w", err)
+	}
+	defer conn.Close()
+
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		return fmt.Errorf("smtp.NewClient: %w", err)
+	}
+	defer client.Quit()
+
+	addrFrom, err := extractAddr(from)
+	if err != nil {
+		return fmt.Errorf("parse From: %w", err)
+	}
+	if err := client.Mail(addrFrom); err != nil {
+		return fmt.Errorf("MAIL FROM failed: %w", err)
+	}
+
+	uniq := map[string]struct{}{}
+	for _, rcpt := range toAll {
+		addrRcpt, err := extractAddr(rcpt)
+		if err != nil {
+			continue
+		}
+		if _, ok := uniq[addrRcpt]; ok {
+			continue
+		}
+		if err := client.Rcpt(addrRcpt); err != nil {
+			return fmt.Errorf("RCPT TO failed for %s: %w", addrRcpt, err)
+		}
+		uniq[addrRcpt] = struct{}{}
+	}
+
+	wc, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("SMTP DATA failed: %w", err)
+	}
+
+	if seeker, ok := raw.(io.Seeker); ok {
+		// seek to start if possible
+		seeker.Seek(0, io.SeekStart)
+	}
+	if _, err := io.Copy(wc, tp.R); err != nil {
+		return fmt.Errorf("sending mail data failed: %w", err)
+	}
+	if err := wc.Close(); err != nil {
+		return fmt.Errorf("DATA close: %w", err)
+	}
+	client.Quit()
+	return nil
+}
+
+func parseAddressList(list string) []string {
+	if list == "" {
+		return nil
+	}
+
+	addrList, err := mail.ParseAddressList(list)
+	if err != nil {
+		// fallback: try to split by comma if parse fails
+		spl := regexp.MustCompile(`\s*,\s*`).Split(list, -1)
+		var out []string
+		for _, s := range spl {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	out := make([]string, 0, len(addrList))
+	for _, a := range addrList {
+		out = append(out, a.Address)
+	}
+
+	return out
+}
+
+// extractAddr extracts only the email address part (no name/comment).
+func extractAddr(addr string) (string, error) {
+	a, err := mail.ParseAddress(addr)
+	if err == nil {
+		return a.Address, nil
+	}
+	// fallback: try <address> pattern or return as is if looks like an email
+	re := regexp.MustCompile(`<([^>]+)>`)
+	m := re.FindStringSubmatch(addr)
+	if len(m) == 2 {
+		return m[1], nil
+	}
+
+	addr = strings.TrimSpace(addr)
+	if strings.Contains(addr, "@") {
+		return addr, nil
+	}
+
+	return "", errors.New("invalid address format")
 }

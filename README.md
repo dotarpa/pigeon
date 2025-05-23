@@ -105,6 +105,35 @@ func main() {
 }
 ```
 
+### 4. SendRaw
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"strings"
+
+	"github.com/dotarpa/pigeon"
+)
+
+func main() {
+	rawMail := `From: alice@example.com
+To: bob@example.com
+Subject: =?UTF-8?B?44GT44KT44Gr44Gh44Gv?=
+
+Hello Bob,
+This is a test mail with UTF-8 subject!
+`
+	err := pigeon.SendRaw(context.Background(), strings.NewReader(rawMail), "localhost:25")
+	if err != nil {
+		log.Fatalf("SendRaw failed: %v", err)
+	}
+	log.Println("Mail sent")
+}
+```
+
 ---
 
 ## Testing
