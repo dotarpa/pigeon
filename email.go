@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/dotarpa/pigeon/tpl"
@@ -48,30 +49,85 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	// Build the message headers.
 	hdr := make(textproto.MIMEHeader)
 
-	from := chooseNonEmpty(t.From(), cfg.From)
-	if from == "" {
+	// Render template fields with data
+	var fromBuf, toBuf, ccBuf, bccBuf, subjBuf bytes.Buffer
+
+	fromTemplate := chooseNonEmpty(t.From(), cfg.From)
+	if fromTemplate == "" {
 		return false, errors.New("missing From address")
 	}
+
+	// Parse and execute From field as template
+	fromTpl, err := template.New("from").Parse(fromTemplate)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse From template: %w", err)
+	}
+	if err := fromTpl.Execute(&fromBuf, data); err != nil {
+		return false, fmt.Errorf("failed to execute From template: %w", err)
+	}
+	from := fromBuf.String()
+
 	hdr.Set("From", from)
 
-	to := chooseNonEmpty(t.To(), cfg.To)
-	if to == "" {
+	toTemplate := chooseNonEmpty(t.To(), cfg.To)
+	if toTemplate == "" {
 		return false, errors.New("missing To address")
 	}
+
+	// Parse and execute To field as template
+	toTpl, err := template.New("to").Parse(toTemplate)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse To template: %w", err)
+	}
+	if err := toTpl.Execute(&toBuf, data); err != nil {
+		return false, fmt.Errorf("failed to execute To template: %w", err)
+	}
+	to := toBuf.String()
 	hdr.Set("To", to)
 
-	if cc := chooseNonEmpty(t.Cc(), cfg.Cc); cc != "" {
-		hdr.Set("Cc", cc)
+	// Handle Cc if present
+	if ccTemplate := chooseNonEmpty(t.Cc(), cfg.Cc); ccTemplate != "" {
+		ccTpl, err := template.New("cc").Parse(ccTemplate)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse Cc template: %w", err)
+		}
+		if err := ccTpl.Execute(&ccBuf, data); err != nil {
+			return false, fmt.Errorf("failed to execute Cc template: %w", err)
+		}
+		if cc := ccBuf.String(); cc != "" {
+			hdr.Set("Cc", cc)
+		}
 	}
-	if bcc := chooseNonEmpty(t.Bcc(), cfg.Bcc); bcc != "" {
-		hdr.Set("Bcc", bcc)
+
+	// Handle Bcc if present
+	if bccTemplate := chooseNonEmpty(t.Bcc(), cfg.Bcc); bccTemplate != "" {
+		bccTpl, err := template.New("bcc").Parse(bccTemplate)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse Bcc template: %w", err)
+		}
+		if err := bccTpl.Execute(&bccBuf, data); err != nil {
+			return false, fmt.Errorf("failed to execute Bcc template: %w", err)
+		}
+		if bcc := bccBuf.String(); bcc != "" {
+			hdr.Set("Bcc", bcc)
+		}
 	}
 
 	// Subject is always taken from template(because config has no subject field for now).
-	subj := t.Subject()
-	if subj == "" {
-		subj = "(no subject)"
+	subjTemplate := t.Subject()
+	if subjTemplate == "" {
+		subjTemplate = "(no subject)"
 	}
+
+	// Parse and execute Subject field as template
+	subjTpl, err := template.New("subject").Parse(subjTemplate)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse Subject template: %w", err)
+	}
+	if err := subjTpl.Execute(&subjBuf, data); err != nil {
+		return false, fmt.Errorf("failed to execute Subject template: %w", err)
+	}
+	subj := subjBuf.String()
 	hdr.Set("Subject", encodingUTF8Subject(subj))
 
 	// Required headers.
@@ -103,7 +159,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 	// If there are no attachments, send as plain text.
 	if len(cfg.Attachments) == 0 {
-		hdr.Set("Context-Type", "text/plain; charset=UTF-8")
+		hdr.Set("Content-Type", "text/plain; charset=UTF-8")
 		hdr.Set("Content-Transfer-Encoding", "7bit")
 		writeHeaders(&msg, hdr)
 		msg.WriteString("\r\n")
@@ -111,7 +167,10 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	} else {
 		// Otherwise, construct a multipart/mixed message.
 		mw := multipart.NewWriter(&msg)
-		hdr.Set("Content-Type", fmt.Sprintf("multipart/mixed; boundary=%s", mw.Boundary()))
+		// Set a shorter boundary to avoid line wrapping issues
+		boundary := fmt.Sprintf("pigeon_%d", time.Now().Unix())
+		mw.SetBoundary(boundary)
+		hdr.Set("Content-Type", fmt.Sprintf("multipart/mixed; boundary=%s", boundary))
 		writeHeaders(&msg, hdr)
 		msg.WriteString("\r\n")
 

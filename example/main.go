@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	cfg, err := pigeon.LoadFile("config.yaml")
+	cfg, err := pigeon.LoadFile("config.yml")
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -1,6 +1,6 @@
 from: sender@example.com
 to: receiver@example.com
-smarthost: smtp.example.com:25
+smarthost: 127.0.0.1:1025
 template_path: email.tmpl
 attachments:
   - ./sample.txt
