@@ -51,6 +51,63 @@ No new items.
 -- End of message --
 ```
 
+**Important Notes:**
+- The template file must follow RFC2822 format: headers, then a blank line, then the message body
+- The blank line between headers and body is **required**
+- Both headers and body support Go template syntax (`{{ .Variable }}`)
+
+### Header Priority
+
+When both template file and configuration file specify the same header field, the priority order is:
+
+1. **Template file headers** (highest priority)
+2. **Configuration file values** (fallback)
+
+Examples:
+
+**Case 1: Template overrides config**
+```
+# mail.tmpl
+From: template@example.com
+To: user@example.com
+Sub: Hello
+
+Message body
+```
+
+```yaml
+# config.yaml
+from: config@example.com  # This will be ignored
+to: config-to@example.com # This will be ignored
+```
+Result: Uses `template@example.com` and `user@example.com`
+
+**Case 2: Config provides fallback**
+```
+# mail.tmpl
+Sub: Hello
+
+Message body
+```
+
+```yaml
+# config.yaml
+from: config@example.com
+to: config-to@example.com
+```
+Result: Uses `config@example.com` and `config-to@example.com` from config
+
+**Case 3: Template variables**
+```
+# mail.tmpl
+From: {{ .From }}
+To: {{ .To }}
+Sub: {{ .Subject }}
+
+Hello {{ .Name }}!
+```
+Result: Template variables are expanded using the data passed to `pigeon.Send()`
+
 ---
 
 ### 2. Prepare a YAML Configuration File
