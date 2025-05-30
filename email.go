@@ -162,8 +162,9 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	if len(cfg.Attachments) == 0 {
 		var bodyBuf bytes.Buffer
 		t.Execute(&bodyBuf, data)
+		bodyContent := bodyBuf.String()
 
-		if isASCII(bodyBuf.String()) {
+		if isASCII(bodyContent) {
 			hdr.Set("Content-Type", "text/plain; charset=UTF-8")
 			hdr.Set("Content-Transfer-Encoding", "7bit")
 		} else {
