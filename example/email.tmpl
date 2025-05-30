@@ -2,16 +2,26 @@ From: {{ .From }}
 To: {{ .To }}
 Sub: {{ .Subject }}
 
-Hello, {{ .Name }}!
+こんにちは、{{ .Name }}さん！
+
+日本語のテストメッセージです。以下は長い行のテストです：
+これは非常に長い行で、76文字を超えるためquoted-printableエンコーディングによって自動的に折り返されるはずです。この行には日本語も含まれています。
 
 {{- if .Items }}
-You have {{ len .Items }} new items:
+あなたには {{ len .Items }} 件の新しいアイテムがあります：
 {{- range .Items }}
-  - {{ . }}
+  • {{ . }} (特殊文字: =, <, >, ", &, ñ, café)
 {{- end }}
 {{ else }}
-No new items.
+新しいアイテムはありません。
 {{ end }}
 
--- End of message --
+特殊文字のテスト：
+- 等号: =3D (これはquoted-printableでエンコードされます)
+- 日本語: こんにちは世界！
+- アクセント付き文字: café, résumé, naïve
+- 記号: <>"&
+- 長い英語行: This is a very long English line that should be wrapped by quoted-printable encoding when it exceeds the 76-character limit per line as specified in RFC 2045.
+
+-- メッセージ終了 --
 

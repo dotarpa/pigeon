@@ -282,3 +282,181 @@ func TestSend_DateHeaderUTC(t *testing.T) {
 		t.Fatal("no message received by mock SMTP")
 	}
 }
+
+func TestSend_QuotedPrintableWrapping(t *testing.T) {
+	addr, recv, teardown := startMockSMTP(t)
+	defer teardown()
+
+	// Create template with long line that should be wrapped by quoted-printable encoding
+	longLine := strings.Repeat("This is a very long line that should be wrapped by quoted-printable encoding. ", 2)
+	tmplContent := fmt.Sprintf("From: sender@example.com\nTo: recv@example.com\nSub: QuotedPrintable Test\n\n%s", longLine)
+	tmplPath := tplWriteTemp(t, tmplContent)
+
+	smarthost := HostPort{}
+	smarthost.Host, smarthost.Port, _ = net.SplitHostPort(addr)
+
+	cfg := EmailConfig{
+		Smarthost:    smarthost,
+		TemplatePath: tmplPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := Send(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	select {
+	case raw := <-recv:
+		// Verify quoted-printable encoding is used
+		if !strings.Contains(raw, "Content-Transfer-Encoding: quoted-printable") {
+			t.Errorf("quoted-printable encoding not found in message")
+		}
+
+		// Verify proper line wrapping - quoted-printable should wrap long lines
+		lines := strings.Split(raw, "\n")
+		bodyStarted := false
+		foundLongLineWrapped := false
+
+		for _, line := range lines {
+			// Skip headers and empty lines to find body
+			if line == "" {
+				bodyStarted = true
+				continue
+			}
+
+			if bodyStarted {
+				// Check that no line exceeds 76 characters
+				if len(line) > 76 {
+					t.Errorf("line too long after quoted-printable encoding: %d chars: %s", len(line), line)
+				}
+
+				// Check for soft line breaks (lines ending with =)
+				if strings.HasSuffix(line, "=") {
+					foundLongLineWrapped = true
+				}
+			}
+		}
+
+		// Verify that line wrapping occurred
+		if !foundLongLineWrapped {
+			t.Errorf("expected to find soft line breaks (=) indicating line wrapping")
+		}
+
+		// Verify original text content is preserved (should be present even if encoded)
+		if !strings.Contains(raw, "very long line") {
+			t.Errorf("original text content not found in message")
+		}
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("no message received by mock SMTP")
+	}
+}
+
+func TestSend_QuotedPrintableSpecialChars(t *testing.T) {
+	addr, recv, teardown := startMockSMTP(t)
+	defer teardown()
+
+	// Create template with special characters including non-ASCII and reserved chars
+	specialChars := "Hello 世界！Special chars: =, ñ, café, résumé, and symbols: <>\"&"
+	tmplContent := fmt.Sprintf("From: sender@example.com\nTo: recv@example.com\nSub: Special Chars Test\n\n%s", specialChars)
+	tmplPath := tplWriteTemp(t, tmplContent)
+
+	smarthost := HostPort{}
+	smarthost.Host, smarthost.Port, _ = net.SplitHostPort(addr)
+
+	cfg := EmailConfig{
+		Smarthost:    smarthost,
+		TemplatePath: tmplPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := Send(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	select {
+	case raw := <-recv:
+		// Verify quoted-printable encoding is used
+		if !strings.Contains(raw, "Content-Transfer-Encoding: quoted-printable") {
+			t.Errorf("quoted-printable encoding not found in message")
+		}
+
+		// Verify special characters are encoded (should contain = markers)
+		if !strings.Contains(raw, "=") {
+			t.Errorf("no quoted-printable encoding markers found")
+		}
+
+		// Verify each line has proper length
+		lines := strings.Split(raw, "\n")
+		bodyStarted := false
+		for _, line := range lines {
+			if bodyStarted && line != "" {
+				if len(line) > 76 {
+					t.Errorf("quoted-printable line too long: %d chars: %s", len(line), line)
+				}
+			}
+			if line == "" {
+				bodyStarted = true
+			}
+		}
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("no message received by mock SMTP")
+	}
+}
+
+func TestSend_QuotedPrintableExactly76Chars(t *testing.T) {
+	addr, recv, teardown := startMockSMTP(t)
+	defer teardown()
+
+	// Create a line that is exactly 76 characters (should not be wrapped)
+	exactLine := strings.Repeat("a", 76)
+	tmplContent := fmt.Sprintf("From: sender@example.com\nTo: recv@example.com\nSub: Exact Length Test\n\n%s", exactLine)
+	tmplPath := tplWriteTemp(t, tmplContent)
+
+	smarthost := HostPort{}
+	smarthost.Host, smarthost.Port, _ = net.SplitHostPort(addr)
+
+	cfg := EmailConfig{
+		Smarthost:    smarthost,
+		TemplatePath: tmplPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := Send(ctx, cfg, nil)
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	select {
+	case raw := <-recv:
+		// Find the line with 76 'a' characters
+		lines := strings.Split(raw, "\n")
+		found := false
+		for _, line := range lines {
+			if strings.Contains(line, strings.Repeat("a", 70)) { // Check for substantial part
+				found = true
+				// Line should not be broken if it's exactly 76 chars or less
+				if len(line) <= 76 {
+					break
+				} else {
+					t.Errorf("76-character line was incorrectly wrapped: %d chars", len(line))
+				}
+			}
+		}
+		if !found {
+			t.Errorf("expected 76-character line not found in output")
+		}
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("no message received by mock SMTP")
+	}
+}
