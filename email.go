@@ -13,6 +13,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -159,11 +160,23 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 	// If there are no attachments, send as plain text.
 	if len(cfg.Attachments) == 0 {
-		hdr.Set("Content-Type", "text/plain; charset=UTF-8")
-		hdr.Set("Content-Transfer-Encoding", "7bit")
+		var bodyBuf bytes.Buffer
+		t.Execute(&bodyBuf, data)
+		bodyContent := bodyBuf.String()
+
+		if isASCII(bodyContent) {
+			hdr.Set("Content-Type", "text/plain; charset=UTF-8")
+			hdr.Set("Content-Transfer-Encoding", "7bit")
+		} else {
+			hdr.Set("Content-Type", "text/plain; charset=UTF-8")
+			hdr.Set("Content-Transfer-Encoding", "quoted-printable")
+		}
+
 		writeHeaders(&msg, hdr)
 		msg.WriteString("\r\n")
-		_ = t.Execute(&msg, data)
+		if err := writeTextPart(&msg, t, data); err != nil {
+			return false, err
+		}
 	} else {
 		// Otherwise, construct a multipart/mixed message.
 		mw := multipart.NewWriter(&msg)
@@ -175,12 +188,22 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		msg.WriteString("\r\n")
 
 		// part 1: text body
-		textHdr := textproto.MIMEHeader{
-			"Content-Type":              {"text/plain; charset=UTF-8"},
-			"Content-Transfer-Encoding": {"7bit"},
+		var bodyBuf bytes.Buffer
+		if err := t.Execute(&bodyBuf, data); err != nil {
+			return false, fmt.Errorf("failed to execute template: %w", err)
 		}
+
+		textHdr := textproto.MIMEHeader{}
+		if isASCII(bodyBuf.String()) {
+			textHdr.Set("Content-Type", "text/plain; charset=UTF-8")
+			textHdr.Set("Content-Transfer-Encoding", "7bit")
+		} else {
+			textHdr.Set("Content-Type", "text/plain; charset=UTF-8")
+			textHdr.Set("Content-Transfer-Encoding", "quoted-printable")
+		}
+
 		pw, _ := mw.CreatePart(textHdr)
-		_ = t.Execute(pw, data)
+		writeTextPart(pw, t, data)
 
 		// Part 2+: attachments.
 		for _, path := range cfg.Attachments {
@@ -293,15 +316,22 @@ func chooseNonEmpty(a, b string) string {
 	return b
 }
 
-// encodingUTF8Subject returns an RFC 2047 encoded UTF-8 subject.
-// Currently it uses the simple Base64 B encoding.
+// encodingUTF8Subject returns an RFC 2047 encoded UTF-8 subject using quoted-printable
 func encodingUTF8Subject(s string) string {
-	// Encode only if non-ASCII is found; otherwise return as-is.
 	if isASCII(s) {
 		return s
 	}
-	b := base64.StdEncoding.EncodeToString([]byte(s))
-	return fmt.Sprintf("=?UTF-8?B?%s?=", b)
+
+	var buf bytes.Buffer
+	qpWriter := quotedprintable.NewWriter(&buf)
+	qpWriter.Write([]byte(s))
+	qpWriter.Close()
+
+	// Remove any CRLF that quoted-printable might add and replace = with encoded form
+	encoded := strings.ReplaceAll(buf.String(), "\r\n", "")
+	encoded = strings.ReplaceAll(encoded, "=", "=3D")
+	encoded = strings.ReplaceAll(encoded, " ", "_") // Replace spaces with underscores for RFC 2047 compliance
+	return fmt.Sprintf("=?UTF-8?Q?%s?=", encoded)
 }
 
 // isASCII returns true if s contains only ASCII characters.
@@ -314,29 +344,48 @@ func isASCII(s string) bool {
 	return true
 }
 
-// foldHeader writes a header with a soft line length limit of 78 characters (RFC 5322 recommended).
-// This is not strictly required (limit is 998), but improves readability and interoperability.
-func foldHeader(buf *bytes.Buffer, k, v string) {
-	const max = 78
-	line := k + ": " + v
-	if len(line) <= max {
-		buf.WriteString(line + "\r\n")
-		return
-	}
-
-	// naive folding: break at max-3 and indent one space
-	for len(line) > max {
-		buf.WriteString(line[:max-1] + "\r\n")
-		line = line[max-1:]
-	}
-	buf.WriteString(line + "\r\n")
-}
-
-// writeHeaders writes the MIME headers to the buffer, folding long lines at 78 characters.
+// writeHeaders writes the MIME headers to the buffer with simple line folding.
 func writeHeaders(buf *bytes.Buffer, h textproto.MIMEHeader) {
+	const maxLineLength = 78
+
 	for k, vv := range h {
 		for _, v := range vv {
-			foldHeader(buf, k, v)
+			line := k + ": " + v
+			if len(line) <= maxLineLength {
+				buf.WriteString(line + "\r\n")
+			} else {
+				// Simple folding at reasonable break points
+				buf.WriteString(k + ": ")
+				remaining := v
+				lineLen := len(k) + 2
+
+				for len(remaining) > 0 {
+					available := maxLineLength - lineLen
+					if available <= 0 {
+						buf.WriteString("\r\n ")
+						lineLen = 1
+						available = maxLineLength - 1
+					}
+
+					if len(remaining) <= available {
+						buf.WriteString(remaining + "\r\n")
+						break
+					}
+
+					// Find a good break point
+					breakPoint := available
+					for i := available - 1; i > available/2 && i < len(remaining); i-- {
+						if remaining[i] == ' ' || remaining[i] == ';' {
+							breakPoint = i + 1
+							break
+						}
+					}
+
+					buf.WriteString(remaining[:breakPoint] + "\r\n ")
+					remaining = remaining[breakPoint:]
+					lineLen = 1
+				}
+			}
 		}
 	}
 }
@@ -480,4 +529,24 @@ func extractAddr(addr string) (string, error) {
 	}
 
 	return "", errors.New("invalid address format")
+}
+
+// writeTextPart writes the text body with quoted-printable encoding when needed
+func writeTextPart(w io.Writer, t *tpl.Template, data any) error {
+	var bodyBuf bytes.Buffer
+	if err := t.Execute(&bodyBuf, data); err != nil {
+		return err
+	}
+
+	body := bodyBuf.String()
+
+	if !isASCII(body) {
+		qpWriter := quotedprintable.NewWriter(w)
+		defer qpWriter.Close()
+		_, err := qpWriter.Write([]byte(body))
+		return err
+	} else {
+		_, err := w.Write([]byte(body))
+		return err
+	}
 }
