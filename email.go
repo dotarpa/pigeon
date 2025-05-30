@@ -329,6 +329,7 @@ func encodingUTF8Subject(s string) string {
 	// Remove any CRLF that quoted-printable might add and replace = with encoded form
 	encoded := strings.ReplaceAll(buf.String(), "\r\n", "")
 	encoded = strings.ReplaceAll(encoded, "=", "=3D")
+	encoded = strings.ReplaceAll(encoded, " ", "_") // Replace spaces with underscores for RFC 2047 compliance
 	return fmt.Sprintf("=?UTF-8?Q?%s?=", encoded)
 }
 
