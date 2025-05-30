@@ -49,7 +49,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 		return false, errors.New("TemplatePath must be specified")
 	}
 
-	if cfg.Smarthost.Host == "" && cfg.Smarthost.Port == "" {
+	if cfg.Smarthost.Host == "" || cfg.Smarthost.Port == "" {
 		return false, errors.New("smarthost must be specified")
 	}
 
