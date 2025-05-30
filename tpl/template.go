@@ -44,6 +44,7 @@ func ParseFile(path string) (*Template, error) {
 			if err == io.EOF {
 				break
 			}
+			return nil, err
 		}
 		if line == "" {
 			break
