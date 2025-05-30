@@ -28,6 +28,11 @@ import (
 	"github.com/dotarpa/pigeon/tpl"
 )
 
+const (
+	maxLineLength    = 78
+	maxContentLength = 76
+)
+
 // Send builds and sends an email using the specified configuration and template data.
 //
 // If cfg.Attachments is non-empty, the message will be sent as multipart/mixed
@@ -40,6 +45,10 @@ import (
 func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error) {
 	if cfg.TemplatePath == "" {
 		return false, errors.New("TemplatePath must be specified")
+	}
+
+	if cfg.Smarthost.Host == "" && cfg.Smarthost.Port == "" {
+		return false, errors.New("smarthost must be specified")
 	}
 
 	t, err := tpl.ParseFile(cfg.TemplatePath)
@@ -162,9 +171,8 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	if len(cfg.Attachments) == 0 {
 		var bodyBuf bytes.Buffer
 		t.Execute(&bodyBuf, data)
-		bodyContent := bodyBuf.String()
 
-		if isASCII(bodyContent) {
+		if isASCII(bodyBuf.String()) && !hasLongLines(bodyBuf.String()) {
 			hdr.Set("Content-Type", "text/plain; charset=UTF-8")
 			hdr.Set("Content-Transfer-Encoding", "7bit")
 		} else {
@@ -174,9 +182,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 		writeHeaders(&msg, hdr)
 		msg.WriteString("\r\n")
-		if err := writeTextPart(&msg, t, data); err != nil {
-			return false, err
-		}
+		writeTextPart(&msg, t, data)
 	} else {
 		// Otherwise, construct a multipart/mixed message.
 		mw := multipart.NewWriter(&msg)
@@ -189,12 +195,10 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 		// part 1: text body
 		var bodyBuf bytes.Buffer
-		if err := t.Execute(&bodyBuf, data); err != nil {
-			return false, fmt.Errorf("failed to execute template: %w", err)
-		}
+		t.Execute(&bodyBuf, data)
 
 		textHdr := textproto.MIMEHeader{}
-		if isASCII(bodyBuf.String()) {
+		if isASCII(bodyBuf.String()) && !hasLongLines(bodyBuf.String()) {
 			textHdr.Set("Content-Type", "text/plain; charset=UTF-8")
 			textHdr.Set("Content-Transfer-Encoding", "7bit")
 		} else {
@@ -207,7 +211,7 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 		// Part 2+: attachments.
 		for _, path := range cfg.Attachments {
-			if err := addAttachementPart(mw, path); err != nil {
+			if err := addAttachmentPart(mw, path); err != nil {
 				return false, err
 			}
 		}
@@ -238,7 +242,11 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	if err != nil {
 		return true, err
 	}
-	defer c.Quit()
+	defer func() {
+		if quitErr := c.Quit(); quitErr != nil {
+			// Log but don't override the main error
+		}
+	}()
 
 	if cfg.Hello != "" {
 		_ = c.Hello(cfg.Hello)
@@ -264,15 +272,12 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 	if err := wc.Close(); err != nil {
 		return true, err
 	}
-	if err := c.Quit(); err != nil {
-		return true, err
-	}
 	return false, nil
 }
 
 // addAttachmentPart adds a file as a base64-encoded attachment part to the multipart message.
 // It infers the content type from the file extension.
-func addAttachementPart(mw *multipart.Writer, path string) error {
+func addAttachmentPart(mw *multipart.Writer, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -330,7 +335,6 @@ func encodingUTF8Subject(s string) string {
 	// Remove any CRLF that quoted-printable might add and replace = with encoded form
 	encoded := strings.ReplaceAll(buf.String(), "\r\n", "")
 	encoded = strings.ReplaceAll(encoded, "=", "=3D")
-	encoded = strings.ReplaceAll(encoded, " ", "_") // Replace spaces with underscores for RFC 2047 compliance
 	return fmt.Sprintf("=?UTF-8?Q?%s?=", encoded)
 }
 
@@ -346,8 +350,6 @@ func isASCII(s string) bool {
 
 // writeHeaders writes the MIME headers to the buffer with simple line folding.
 func writeHeaders(buf *bytes.Buffer, h textproto.MIMEHeader) {
-	const maxLineLength = 78
-
 	for k, vv := range h {
 		for _, v := range vv {
 			line := k + ": " + v
@@ -535,18 +537,34 @@ func extractAddr(addr string) (string, error) {
 func writeTextPart(w io.Writer, t *tpl.Template, data any) error {
 	var bodyBuf bytes.Buffer
 	if err := t.Execute(&bodyBuf, data); err != nil {
-		return err
+		return fmt.Errorf("failed to execute template: %w", err)
 	}
 
 	body := bodyBuf.String()
 
-	if !isASCII(body) {
+	// Always use quoted-printable for non-ASCII content or long lines
+	if !isASCII(body) || hasLongLines(body) {
 		qpWriter := quotedprintable.NewWriter(w)
 		defer qpWriter.Close()
-		_, err := qpWriter.Write([]byte(body))
-		return err
-	} else {
-		_, err := w.Write([]byte(body))
-		return err
+		if _, err := qpWriter.Write([]byte(body)); err != nil {
+			return fmt.Errorf("failed to write quoted-printable: %w", err)
+		}
+		return nil
 	}
+
+	if _, err := w.Write([]byte(body)); err != nil {
+		return fmt.Errorf("failed to write body: %w", err)
+	}
+	return nil
+}
+
+// hasLongLines checks if any line in the text exceeds 76 characters
+func hasLongLines(text string) bool {
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		if len(line) > maxContentLength {
+			return true
+		}
+	}
+	return false
 }
