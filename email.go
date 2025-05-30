@@ -188,7 +188,9 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 		// part 1: text body
 		var bodyBuf bytes.Buffer
-		t.Execute(&bodyBuf, data)
+		if err := t.Execute(&bodyBuf, data); err != nil {
+			return false, fmt.Errorf("failed to execute template: %w", err)
+		}
 
 		textHdr := textproto.MIMEHeader{}
 		if isASCII(bodyBuf.String()) {
