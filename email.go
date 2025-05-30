@@ -173,7 +173,9 @@ func Send(ctx context.Context, cfg EmailConfig, data any) (retry bool, err error
 
 		writeHeaders(&msg, hdr)
 		msg.WriteString("\r\n")
-		writeTextPart(&msg, t, data)
+		if err := writeTextPart(&msg, t, data); err != nil {
+			return false, err
+		}
 	} else {
 		// Otherwise, construct a multipart/mixed message.
 		mw := multipart.NewWriter(&msg)
